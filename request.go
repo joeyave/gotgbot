@@ -190,8 +190,12 @@ func (bot *Bot) PostWithContext(ctx context.Context, method string, params map[s
 		"http_method": http.MethodPost,
 		"api_method":  method,
 	}).Inc()
-
+	timer := prometheus.NewTimer(requestDuration.With(prometheus.Labels{
+		"http_method": http.MethodPost,
+		"api_method":  method,
+	}))
 	resp, err := bot.Client.Do(req)
+	timer.ObserveDuration()
 	if err != nil {
 		totalHTTPErrors.With(prometheus.Labels{
 			"http_method": http.MethodPost,
