@@ -8,7 +8,6 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -20,10 +19,8 @@ import (
 const (
 	// DefaultAPIURL is the default telegram API URL.
 	DefaultAPIURL = "https://api.telegram.org"
-	// DefaultGetTimeout is the default timeout to be set for a GET request.
-	DefaultGetTimeout = time.Second * 3
-	// DefaultPostTimeout is the default timeout to be set for a POST request.
-	DefaultPostTimeout = time.Second * 10
+	// DefaultTimeout is the default timeout to be set for all requests.
+	DefaultTimeout = time.Second * 5
 )
 
 var (
@@ -92,7 +89,7 @@ type Response struct {
 
 type TelegramError struct {
 	Method      string
-	Params      url.Values
+	Params      map[string]string
 	Code        int
 	Description string
 }
@@ -119,111 +116,85 @@ func (nf NamedFile) Name() string {
 	return nf.FileName
 }
 
-func (bot *Bot) Get(method string, params url.Values) (json.RawMessage, error) {
-	if bot.GetTimeout == 0 {
-		bot.GetTimeout = DefaultGetTimeout
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), bot.GetTimeout)
-	defer cancel()
-
-	return bot.GetWithContext(ctx, method, params)
+// RequestOpts defines any request-specific options used to interact with the telegram API.
+type RequestOpts struct {
+	// Timeout for the HTTP request to the telegram API.
+	Timeout time.Duration
+	// Custom API URL to use for requests.
+	APIURL string
 }
 
-// GetWithContext allows sending a Get request with an existing context.
-func (bot *Bot) GetWithContext(ctx context.Context, method string, params url.Values) (json.RawMessage, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, bot.methodEnpoint(method), nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build GET request to %s: %w", method, err)
-	}
+// Post sends a POST request to the telegram bot API.
+func (bot *Bot) Post(method string, params map[string]string, data map[string]NamedReader, opts *RequestOpts) (json.RawMessage, error) {
+	ctx, cancel := bot.getTimeoutContext(opts)
+	defer cancel()
 
-	req.URL.RawQuery = params.Encode()
+	return bot.PostWithContext(ctx, method, params, data, opts)
+}
 
-	totalRequests.With(prometheus.Labels{
-		"http_method": "GET",
-		"api_method":  method,
-	}).Inc()
+// getTimeoutContext returns the appropriate context for the current settings.
+func (bot *Bot) getTimeoutContext(opts *RequestOpts) (context.Context, context.CancelFunc) {
+	if opts != nil {
+		if opts.Timeout > 0 {
+			// custom timeout defined
+			return context.WithTimeout(context.Background(), opts.Timeout)
 
-	timer := prometheus.NewTimer(requestDuration.With(prometheus.Labels{
-		"http_method": "GET",
-		"api_method":  method,
-	}))
-	resp, err := bot.Client.Do(req)
-	timer.ObserveDuration()
-	if err != nil {
-		totalHTTPErrors.With(prometheus.Labels{
-			"http_method": "GET",
-			"api_method":  method,
-		}).Inc()
-		return nil, fmt.Errorf("failed to execute GET request to %s: %w", method, err)
-	}
-	defer resp.Body.Close()
-
-	var r Response
-	if err = json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return nil, fmt.Errorf("failed to decode GET request to %s: %w", method, err)
-	}
-
-	if !r.Ok {
-		totalAPIErrors.With(prometheus.Labels{
-			"http_method":      "GET",
-			"api_method":       method,
-			"http_status_code": strconv.Itoa(resp.StatusCode),
-			"api_status_code":  strconv.Itoa(r.ErrorCode),
-			"description":      r.Description,
-		}).Inc()
-		return nil, &TelegramError{
-			Method:      method,
-			Params:      params,
-			Code:        r.ErrorCode,
-			Description: r.Description,
+		} else if opts.Timeout < 0 {
+			return context.Background(), func() {}
 		}
 	}
 
-	return r.Result, nil
-}
-
-func (bot *Bot) Post(method string, params url.Values, data map[string]NamedReader) (json.RawMessage, error) {
-	if bot.PostTimeout == 0 {
-		bot.PostTimeout = DefaultPostTimeout
+	if bot.DefaultRequestOpts != nil {
+		if bot.DefaultRequestOpts.Timeout > 0 {
+			return context.WithTimeout(context.Background(), bot.DefaultRequestOpts.Timeout)
+		} else if bot.DefaultRequestOpts.Timeout < 0 {
+			return context.Background(), func() {}
+		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), bot.PostTimeout)
-	defer cancel()
-
-	return bot.PostWithContext(ctx, method, params, data)
+	return context.WithTimeout(context.Background(), DefaultTimeout)
 }
 
-// PostWithContext allows sending a Post request with an existing context.
-func (bot *Bot) PostWithContext(ctx context.Context, method string, params url.Values, data map[string]NamedReader) (json.RawMessage, error) {
+// PostWithContext allows sending a POST request to the telegram bot API with an existing context.
+// - ctx: the timeout contexts to be used.
+// - method: the telegram API method to call.
+// - params: map of parameters to be sending to the telegram API. eg: chat_id, user_id, etc.
+// - data: map of any files to be sending to the telegram API.
+// - opts: request opts to use.
+func (bot *Bot) PostWithContext(ctx context.Context, method string, params map[string]string, data map[string]NamedReader, opts *RequestOpts) (json.RawMessage, error) {
 	b := &bytes.Buffer{}
 	contentType := "application/json"
 
+	// Check if there are any files to upload. If yes, use multipart; else, use JSON.
 	if len(data) > 0 {
 		var err error
-		contentType, err = fillBuffer(b, data)
+		contentType, err = fillBuffer(b, params, data)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		err := json.NewEncoder(b).Encode(params)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, bot.methodEnpoint(method), b)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, bot.methodEnpoint(method, opts), b)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build POST request to %s: %w", method, err)
 	}
 
-	req.URL.RawQuery = params.Encode()
 	req.Header.Set("Content-Type", contentType)
 
 	totalRequests.With(prometheus.Labels{
-		"http_method": "POST",
+		"http_method": http.MethodPost,
 		"api_method":  method,
 	}).Inc()
 
 	resp, err := bot.Client.Do(req)
 	if err != nil {
 		totalHTTPErrors.With(prometheus.Labels{
-			"http_method": "POST",
+			"http_method": http.MethodPost,
 			"api_method":  method,
 		}).Inc()
 		return nil, fmt.Errorf("failed to execute POST request to %s: %w", method, err)
@@ -237,7 +208,7 @@ func (bot *Bot) PostWithContext(ctx context.Context, method string, params url.V
 
 	if !r.Ok {
 		totalAPIErrors.With(prometheus.Labels{
-			"http_method":      "POST",
+			"http_method":      http.MethodPost,
 			"api_method":       method,
 			"http_status_code": strconv.Itoa(resp.StatusCode),
 			"api_status_code":  strconv.Itoa(r.ErrorCode),
@@ -254,8 +225,15 @@ func (bot *Bot) PostWithContext(ctx context.Context, method string, params url.V
 	return r.Result, nil
 }
 
-func fillBuffer(b *bytes.Buffer, data map[string]NamedReader) (string, error) {
+func fillBuffer(b *bytes.Buffer, params map[string]string, data map[string]NamedReader) (string, error) {
 	w := multipart.NewWriter(b)
+
+	for k, v := range params {
+		err := w.WriteField(k, v)
+		if err != nil {
+			return "", fmt.Errorf("failed to write multipart field %s with vale %s: %w", k, v, err)
+		}
+	}
 
 	for field, file := range data {
 		fileName := file.Name()
@@ -281,15 +259,30 @@ func fillBuffer(b *bytes.Buffer, data map[string]NamedReader) (string, error) {
 	return w.FormDataContentType(), nil
 }
 
-// GetAPIURL returns the currently used API endpoint.
-func (bot *Bot) GetAPIURL() string {
-	if bot.APIURL == "" {
+func getCleanAPIURL(url string) string {
+	if url == "" {
 		return DefaultAPIURL
 	}
 	// Trim suffix to ensure consistent output
-	return strings.TrimSuffix(bot.APIURL, "/")
+	return strings.TrimSuffix(url, "/")
 }
 
-func (bot *Bot) methodEnpoint(method string) string {
-	return fmt.Sprintf("%s/bot%s/%s", bot.GetAPIURL(), bot.Token, method)
+// GetAPIURL returns the currently used API endpoint.
+func (bot *Bot) GetAPIURL() string {
+	return bot.getAPIURL(nil)
+}
+
+// getAPIURL returns the currently used API endpoint.
+func (bot *Bot) getAPIURL(opts *RequestOpts) string {
+	if opts != nil && opts.APIURL != "" {
+		return getCleanAPIURL(opts.APIURL)
+	}
+	if bot.DefaultRequestOpts != nil && bot.DefaultRequestOpts.APIURL != "" {
+		return getCleanAPIURL(bot.DefaultRequestOpts.APIURL)
+	}
+	return DefaultAPIURL
+}
+
+func (bot *Bot) methodEnpoint(method string, opts *RequestOpts) string {
+	return fmt.Sprintf("%s/bot%s/%s", bot.getAPIURL(opts), bot.Token, method)
 }
