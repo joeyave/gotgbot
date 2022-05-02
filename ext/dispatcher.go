@@ -165,11 +165,13 @@ func (d *Dispatcher) limitlessDispatcher(b *gotgbot.Bot) {
 
 // AddHandler adds a new handler to the dispatcher. The dispatcher will call CheckUpdate() to see whether the handler
 // should be executed, and then HandleUpdate() to execute it.
+// Warning: Not thread safe.
 func (d *Dispatcher) AddHandler(handler Handler) {
 	d.AddHandlerToGroup(handler, 0)
 }
 
 // AddHandlerToGroup adds a handler to a specific group; lowest number will be processed first.
+// Warning: Not thread safe.
 func (d *Dispatcher) AddHandlerToGroup(handler Handler, group int) {
 	currHandlers, ok := d.handlers[group]
 	if !ok {
@@ -182,6 +184,7 @@ func (d *Dispatcher) AddHandlerToGroup(handler Handler, group int) {
 // RemoveHandlerFromGroup removes a handler by name from the specified group.
 // If multiple handlers have the same name, only the first one is removed.
 // Returns true if the handler was successfully removed.
+// Warning: Not thread safe.
 func (d *Dispatcher) RemoveHandlerFromGroup(handlerName string, group int) bool {
 	currHandlers, ok := d.handlers[group]
 	if !ok {
@@ -207,6 +210,7 @@ func (d *Dispatcher) RemoveHandlerFromGroup(handlerName string, group int) bool 
 
 // RemoveGroup removes an entire group from the dispatcher's processing.
 // If group can't be found, this is a noop.
+// Warning: Not thread safe.
 func (d *Dispatcher) RemoveGroup(group int) {
 	if _, ok := d.handlers[group]; !ok {
 		// Group doesn't exist in map, so already removed.
