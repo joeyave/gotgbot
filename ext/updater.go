@@ -140,7 +140,6 @@ func (u *Updater) pollingLoop(b *gotgbot.Bot, opts *gotgbot.RequestOpts, dropPen
 
 	var offset int64
 	for u.running {
-		// note: this bot instance uses a custom http.Client with longer timeouts
 		r, err := b.Post("getUpdates", v, nil, opts)
 		if err != nil {
 			u.ErrorLog.Println("failed to get updates; sleeping 1s: " + err.Error())
