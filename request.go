@@ -163,8 +163,8 @@ func (bot *Bot) getTimeoutContext(opts *RequestOpts) (context.Context, context.C
 // - opts: request opts to use.
 func (bot *Bot) PostWithContext(ctx context.Context, method string, params map[string]string, data map[string]NamedReader, opts *RequestOpts) (json.RawMessage, error) {
 	b := &bytes.Buffer{}
-	contentType := "application/json"
 
+	var contentType string
 	// Check if there are any files to upload. If yes, use multipart; else, use JSON.
 	if len(data) > 0 {
 		var err error
@@ -173,9 +173,10 @@ func (bot *Bot) PostWithContext(ctx context.Context, method string, params map[s
 			return nil, err
 		}
 	} else {
+		contentType = "application/json"
 		err := json.NewEncoder(b).Encode(params)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to encode parameters as JSON: %w", err)
 		}
 	}
 
@@ -235,7 +236,7 @@ func fillBuffer(b *bytes.Buffer, params map[string]string, data map[string]Named
 	for k, v := range params {
 		err := w.WriteField(k, v)
 		if err != nil {
-			return "", fmt.Errorf("failed to write multipart field %s with vale %s: %w", k, v, err)
+			return "", fmt.Errorf("failed to write multipart field %s with value %s: %w", k, v, err)
 		}
 	}
 
