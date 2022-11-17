@@ -150,7 +150,7 @@ func (u *Updater) pollingLoop(b *gotgbot.Bot, opts *gotgbot.RequestOpts, dropPen
 			// continue as usual
 		}
 
-		r, err := b.Post("getUpdates", v, nil, opts)
+		r, err := b.Request("getUpdates", v, nil, opts)
 		if err != nil {
 			u.ErrorLog.Println("failed to get updates; sleeping 1s: " + err.Error())
 			time.Sleep(time.Second)
@@ -267,8 +267,10 @@ func (u *Updater) StartWebhook(b *gotgbot.Bot, opts WebhookOpts) error {
 	})
 
 	u.server = &http.Server{
-		Addr:    opts.GetListenAddr(),
-		Handler: mux,
+		Addr:              opts.GetListenAddr(),
+		Handler:           mux,
+		ReadTimeout:       opts.ReadTimeout,
+		ReadHeaderTimeout: opts.ReadHeaderTimeout,
 	}
 
 	go func() {
@@ -295,6 +297,13 @@ type WebhookOpts struct {
 	// URLPath defines the path to listen at; eg <domainname>/<URLPath>.
 	// Using the bot token here is often a good idea, as it is a secret known only by telegram.
 	URLPath string
+	// ReadTimeout is passed to the http server to limit the time it takes to read an incoming request.
+	// See http.Server for more details.
+	ReadTimeout time.Duration
+	// ReadHeaderTimeout is passed to the http server to limit the time it takes to read the headers of an incoming
+	// request.
+	// See http.Server for more details.
+	ReadHeaderTimeout time.Duration
 
 	// HTTPS cert and key files for custom signed certificates
 	CertFile string

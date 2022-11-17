@@ -384,12 +384,20 @@ type Chat struct {
 	FirstName string `json:"first_name,omitempty"`
 	// Optional. Last name of the other party in a private chat
 	LastName string `json:"last_name,omitempty"`
+	// Optional. True, if the supergroup chat is a forum (has topics enabled)
+	IsForum bool `json:"is_forum,omitempty"`
 	// Optional. Chat photo. Returned only in getChat.
 	Photo *ChatPhoto `json:"photo,omitempty"`
+	// Optional. If non-empty, the list of all active chat usernames; for private chats, supergroups and channels. Returned only in getChat.
+	ActiveUsernames []string `json:"active_usernames,omitempty"`
+	// Optional. Custom emoji identifier of emoji status of the other party in a private chat. Returned only in getChat.
+	EmojiStatusCustomEmojiId string `json:"emoji_status_custom_emoji_id,omitempty"`
 	// Optional. Bio of the other party in a private chat. Returned only in getChat.
 	Bio string `json:"bio,omitempty"`
 	// Optional. True, if privacy settings of the other party in the private chat allows to use tg://user?id=<user_id> links only in chats with the user. Returned only in getChat.
 	HasPrivateForwards bool `json:"has_private_forwards,omitempty"`
+	// Optional. True, if the privacy settings of the other party restrict sending voice and video note messages in the private chat. Returned only in getChat.
+	HasRestrictedVoiceAndVideoMessages bool `json:"has_restricted_voice_and_video_messages,omitempty"`
 	// Optional. True, if users need to join the supergroup before they can send messages. Returned only in getChat.
 	JoinToSendMessages bool `json:"join_to_send_messages,omitempty"`
 	// Optional. True, if all users directly joining the supergroup need to be approved by supergroup administrators. Returned only in getChat.
@@ -443,6 +451,8 @@ type ChatAdministratorRights struct {
 	CanEditMessages bool `json:"can_edit_messages,omitempty"`
 	// Optional. True, if the user is allowed to pin messages; groups and supergroups only
 	CanPinMessages bool `json:"can_pin_messages,omitempty"`
+	// Optional. True, if the user is allowed to create, rename, close, and reopen forum topics; supergroups only
+	CanManageTopics bool `json:"can_manage_topics,omitempty"`
 }
 
 // ChatInviteLink Represents an invite link for a chat.
@@ -540,6 +550,8 @@ type MergedChatMember struct {
 	CanEditMessages bool `json:"can_edit_messages,omitempty"`
 	// Optional. True, if the user is allowed to pin messages; groups and supergroups only (Only for administrator, restricted)
 	CanPinMessages bool `json:"can_pin_messages,omitempty"`
+	// Optional. True, if the user is allowed to create, rename, close, and reopen forum topics; supergroups only (Only for administrator, restricted)
+	CanManageTopics bool `json:"can_manage_topics,omitempty"`
 	// Optional. True, if the user is a member of the chat at the moment of the request (Only for restricted)
 	IsMember bool `json:"is_member,omitempty"`
 	// Optional. True, if the user is allowed to send text messages, contacts, locations and venues (Only for restricted)
@@ -692,6 +704,8 @@ type ChatMemberAdministrator struct {
 	CanEditMessages bool `json:"can_edit_messages,omitempty"`
 	// Optional. True, if the user is allowed to pin messages; groups and supergroups only
 	CanPinMessages bool `json:"can_pin_messages,omitempty"`
+	// Optional. True, if the user is allowed to create, rename, close, and reopen forum topics; supergroups only
+	CanManageTopics bool `json:"can_manage_topics,omitempty"`
 	// Optional. Custom title for this user
 	CustomTitle string `json:"custom_title,omitempty"`
 }
@@ -723,6 +737,7 @@ func (v ChatMemberAdministrator) MergeChatMember() MergedChatMember {
 		CanPostMessages:     v.CanPostMessages,
 		CanEditMessages:     v.CanEditMessages,
 		CanPinMessages:      v.CanPinMessages,
+		CanManageTopics:     v.CanManageTopics,
 		CustomTitle:         v.CustomTitle,
 	}
 }
@@ -929,6 +944,8 @@ type ChatMemberRestricted struct {
 	CanInviteUsers bool `json:"can_invite_users"`
 	// True, if the user is allowed to pin messages
 	CanPinMessages bool `json:"can_pin_messages"`
+	// True, if the user is allowed to create forum topics
+	CanManageTopics bool `json:"can_manage_topics"`
 	// True, if the user is allowed to send text messages, contacts, locations and venues
 	CanSendMessages bool `json:"can_send_messages"`
 	// True, if the user is allowed to send audios, documents, photos, videos, video notes and voice notes
@@ -962,6 +979,7 @@ func (v ChatMemberRestricted) MergeChatMember() MergedChatMember {
 		CanChangeInfo:         v.CanChangeInfo,
 		CanInviteUsers:        v.CanInviteUsers,
 		CanPinMessages:        v.CanPinMessages,
+		CanManageTopics:       v.CanManageTopics,
 		CanSendMessages:       v.CanSendMessages,
 		CanSendMediaMessages:  v.CanSendMediaMessages,
 		CanSendPolls:          v.CanSendPolls,
@@ -1056,6 +1074,8 @@ type ChatPermissions struct {
 	CanInviteUsers bool `json:"can_invite_users,omitempty"`
 	// Optional. True, if the user is allowed to pin messages. Ignored in public supergroups
 	CanPinMessages bool `json:"can_pin_messages,omitempty"`
+	// Optional. True, if the user is allowed to create forum topics. If omitted defaults to the value of can_pin_messages
+	CanManageTopics bool `json:"can_manage_topics,omitempty"`
 }
 
 // ChatPhoto This object represents a chat photo.
@@ -1191,6 +1211,38 @@ type ForceReply struct {
 // ForceReply.replyMarkup is a dummy method to avoid interface implementation.
 func (v ForceReply) replyMarkup() {}
 
+// ForumTopic This object represents a forum topic.
+// https://core.telegram.org/bots/api#forumtopic
+type ForumTopic struct {
+	// Unique identifier of the forum topic
+	MessageThreadId int64 `json:"message_thread_id"`
+	// Name of the topic
+	Name string `json:"name"`
+	// Color of the topic icon in RGB format
+	IconColor int64 `json:"icon_color"`
+	// Optional. Unique identifier of the custom emoji shown as the topic icon
+	IconCustomEmojiId string `json:"icon_custom_emoji_id,omitempty"`
+}
+
+// ForumTopicClosed This object represents a service message about a forum topic closed in the chat. Currently holds no information.
+// https://core.telegram.org/bots/api#forumtopicclosed
+type ForumTopicClosed struct{}
+
+// ForumTopicCreated This object represents a service message about a new forum topic created in the chat.
+// https://core.telegram.org/bots/api#forumtopiccreated
+type ForumTopicCreated struct {
+	// Name of the topic
+	Name string `json:"name"`
+	// Color of the topic icon in RGB format
+	IconColor int64 `json:"icon_color"`
+	// Optional. Unique identifier of the custom emoji shown as the topic icon
+	IconCustomEmojiId string `json:"icon_custom_emoji_id,omitempty"`
+}
+
+// ForumTopicReopened This object represents a service message about a forum topic reopened in the chat. Currently holds no information.
+// https://core.telegram.org/bots/api#forumtopicreopened
+type ForumTopicReopened struct{}
+
 // Game This object represents a game. Use BotFather to create and edit games, their short names will act as unique identifiers.
 // https://core.telegram.org/bots/api#game
 type Game struct {
@@ -1233,9 +1285,9 @@ type InlineKeyboardButton struct {
 	// Optional. An HTTPS URL used to automatically authorize the user. Can be used as a replacement for the Telegram Login Widget.
 	LoginUrl *LoginUrl `json:"login_url,omitempty"`
 	// Optional. If set, pressing the button will prompt the user to select one of their chats, open that chat and insert the bot's username and the specified inline query in the input field. May be empty, in which case just the bot's username will be inserted. Note: This offers an easy way for users to start using your bot in inline mode when they are currently in a private chat with it. Especially useful when combined with switch_pm... actions - in this case the user will be automatically returned to the chat they switched from, skipping the chat selection screen.
-	SwitchInlineQuery string `json:"switch_inline_query,omitempty"`
+	SwitchInlineQuery *string `json:"switch_inline_query,omitempty"`
 	// Optional. If set, pressing the button will insert the bot's username and the specified inline query in the current chat's input field. May be empty, in which case only the bot's username will be inserted. This offers a quick way for the user to open your bot in inline mode in the same chat - good for selecting something from multiple options.
-	SwitchInlineQueryCurrentChat string `json:"switch_inline_query_current_chat,omitempty"`
+	SwitchInlineQueryCurrentChat *string `json:"switch_inline_query_current_chat,omitempty"`
 	// Optional. Description of the game that will be launched when the user presses the button. NOTE: This type of button must always be the first button in the first row.
 	CallbackGame *CallbackGame `json:"callback_game,omitempty"`
 	// Optional. Specify True, to send a Pay button. NOTE: This type of button must always be the first button in the first row and can only be used in invoice messages.
@@ -1339,7 +1391,7 @@ type MergedInlineQueryResult struct {
 	VoiceFileId string `json:"voice_file_id,omitempty"`
 	// Optional. URL of the result (Only for article)
 	Url string `json:"url,omitempty"`
-	// Optional. Pass True, if you don't want the URL to be shown in the message (Only for article)
+	// Optional. Pass True if you don't want the URL to be shown in the message (Only for article)
 	HideUrl bool `json:"hide_url,omitempty"`
 	// Optional. Url of the thumbnail for the result (Only for article, contact, document, gif, location, mpeg4_gif, photo, venue, video)
 	ThumbUrl string `json:"thumb_url,omitempty"`
@@ -1458,7 +1510,7 @@ type InlineQueryResultArticle struct {
 	ReplyMarkup *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
 	// Optional. URL of the result
 	Url string `json:"url,omitempty"`
-	// Optional. Pass True, if you don't want the URL to be shown in the message
+	// Optional. Pass True if you don't want the URL to be shown in the message
 	HideUrl bool `json:"hide_url,omitempty"`
 	// Optional. Short description of the result
 	Description string `json:"description,omitempty"`
@@ -2853,19 +2905,19 @@ type InputInvoiceMessageContent struct {
 	PhotoWidth int64 `json:"photo_width,omitempty"`
 	// Optional. Photo height
 	PhotoHeight int64 `json:"photo_height,omitempty"`
-	// Optional. Pass True, if you require the user's full name to complete the order
+	// Optional. Pass True if you require the user's full name to complete the order
 	NeedName bool `json:"need_name,omitempty"`
-	// Optional. Pass True, if you require the user's phone number to complete the order
+	// Optional. Pass True if you require the user's phone number to complete the order
 	NeedPhoneNumber bool `json:"need_phone_number,omitempty"`
-	// Optional. Pass True, if you require the user's email address to complete the order
+	// Optional. Pass True if you require the user's email address to complete the order
 	NeedEmail bool `json:"need_email,omitempty"`
-	// Optional. Pass True, if you require the user's shipping address to complete the order
+	// Optional. Pass True if you require the user's shipping address to complete the order
 	NeedShippingAddress bool `json:"need_shipping_address,omitempty"`
-	// Optional. Pass True, if the user's phone number should be sent to provider
+	// Optional. Pass True if the user's phone number should be sent to provider
 	SendPhoneNumberToProvider bool `json:"send_phone_number_to_provider,omitempty"`
-	// Optional. Pass True, if the user's email address should be sent to provider
+	// Optional. Pass True if the user's email address should be sent to provider
 	SendEmailToProvider bool `json:"send_email_to_provider,omitempty"`
-	// Optional. Pass True, if the final price depends on the shipping method
+	// Optional. Pass True if the final price depends on the shipping method
 	IsFlexible bool `json:"is_flexible,omitempty"`
 }
 
@@ -2935,7 +2987,7 @@ type MergedInputMedia struct {
 	Performer string `json:"performer,omitempty"`
 	// Optional. Title of the audio (Only for audio)
 	Title string `json:"title,omitempty"`
-	// Optional. Pass True, if the uploaded video is suitable for streaming (Only for video)
+	// Optional. Pass True if the uploaded video is suitable for streaming (Only for video)
 	SupportsStreaming bool `json:"supports_streaming,omitempty"`
 }
 
@@ -3294,7 +3346,7 @@ type InputMediaVideo struct {
 	Height int64 `json:"height,omitempty"`
 	// Optional. Video duration in seconds
 	Duration int64 `json:"duration,omitempty"`
-	// Optional. Pass True, if the uploaded video is suitable for streaming
+	// Optional. Pass True if the uploaded video is suitable for streaming
 	SupportsStreaming bool `json:"supports_streaming,omitempty"`
 }
 
@@ -3483,7 +3535,7 @@ type Location struct {
 // Telegram apps support these buttons as of version 5.7.
 // https://core.telegram.org/bots/api#loginurl
 type LoginUrl struct {
-	// An HTTP URL to be opened with user authorization data added to the query string when the button is pressed. If the user refuses to provide authorization data, the original URL without information about the user will be opened. The data added is the same as described in Receiving authorization data. NOTE: You must always check the hash of the received data to verify the authentication and the integrity of the data as described in Checking authorization.
+	// An HTTPS URL to be opened with user authorization data added to the query string when the button is pressed. If the user refuses to provide authorization data, the original URL without information about the user will be opened. The data added is the same as described in Receiving authorization data. NOTE: You must always check the hash of the received data to verify the authentication and the integrity of the data as described in Checking authorization.
 	Url string `json:"url"`
 	// Optional. New text of the button in forwarded messages.
 	ForwardText string `json:"forward_text,omitempty"`
@@ -3715,6 +3767,8 @@ func (v MenuButtonWebApp) menuButton() {}
 type Message struct {
 	// Unique message identifier inside this chat
 	MessageId int64 `json:"message_id"`
+	// Optional. Unique identifier of a message thread to which the message belongs; for supergroups only
+	MessageThreadId int64 `json:"message_thread_id,omitempty"`
 	// Optional. Sender of the message; empty for messages sent to channels. For backward compatibility, the field contains a fake sender user in non-channel chats, if the message was sent on behalf of a chat.
 	From *User `json:"from,omitempty"`
 	// Optional. Sender of the message, sent on behalf of a chat. For example, the channel itself for channel posts, the supergroup itself for messages from anonymous group administrators, the linked channel for messages automatically forwarded to the discussion group. For backward compatibility, the field from contains a fake sender user in non-channel chats, if the message was sent on behalf of a chat.
@@ -3735,6 +3789,8 @@ type Message struct {
 	ForwardSenderName string `json:"forward_sender_name,omitempty"`
 	// Optional. For forwarded messages, date the original message was sent in Unix time
 	ForwardDate int64 `json:"forward_date,omitempty"`
+	// Optional. True, if the message is sent to a forum topic
+	IsTopicMessage bool `json:"is_topic_message,omitempty"`
 	// Optional. True, if the message is a channel post that was automatically forwarded to the connected discussion group
 	IsAutomaticForward bool `json:"is_automatic_forward,omitempty"`
 	// Optional. For replies, the original message. Note that the Message object in this field will not contain further reply_to_message fields even if it itself is a reply.
@@ -3819,6 +3875,12 @@ type Message struct {
 	PassportData *PassportData `json:"passport_data,omitempty"`
 	// Optional. Service message. A user in the chat triggered another user's proximity alert while sharing Live Location.
 	ProximityAlertTriggered *ProximityAlertTriggered `json:"proximity_alert_triggered,omitempty"`
+	// Optional. Service message: forum topic created
+	ForumTopicCreated *ForumTopicCreated `json:"forum_topic_created,omitempty"`
+	// Optional. Service message: forum topic closed
+	ForumTopicClosed *ForumTopicClosed `json:"forum_topic_closed,omitempty"`
+	// Optional. Service message: forum topic reopened
+	ForumTopicReopened *ForumTopicReopened `json:"forum_topic_reopened,omitempty"`
 	// Optional. Service message: video chat scheduled
 	VideoChatScheduled *VideoChatScheduled `json:"video_chat_scheduled,omitempty"`
 	// Optional. Service message: video chat started
@@ -3843,7 +3905,7 @@ type MessageAutoDeleteTimerChanged struct {
 // MessageEntity This object represents one special entity in a text message. For example, hashtags, usernames, URLs, etc.
 // https://core.telegram.org/bots/api#messageentity
 type MessageEntity struct {
-	// Type of the entity. Currently, can be "mention" (@username), "hashtag" (#hashtag), "cashtag" ($USD), "bot_command" (/start@jobs_bot), "url" (https://telegram.org), "email" (do-not-reply@telegram.org), "phone_number" (+1-212-555-0123), "bold" (bold text), "italic" (italic text), "underline" (underlined text), "strikethrough" (strikethrough text), "spoiler" (spoiler message), "code" (monowidth string), "pre" (monowidth block), "text_link" (for clickable text URLs), "text_mention" (for users without usernames)
+	// Type of the entity. Currently, can be "mention" (@username), "hashtag" (#hashtag), "cashtag" ($USD), "bot_command" (/start@jobs_bot), "url" (https://telegram.org), "email" (do-not-reply@telegram.org), "phone_number" (+1-212-555-0123), "bold" (bold text), "italic" (italic text), "underline" (underlined text), "strikethrough" (strikethrough text), "spoiler" (spoiler message), "code" (monowidth string), "pre" (monowidth block), "text_link" (for clickable text URLs), "text_mention" (for users without usernames), "custom_emoji" (for inline custom emoji stickers)
 	Type string `json:"type"`
 	// Offset in UTF-16 code units to the start of the entity
 	Offset int64 `json:"offset"`
@@ -3855,6 +3917,8 @@ type MessageEntity struct {
 	User *User `json:"user,omitempty"`
 	// Optional. For "pre" only, the programming language of the entity text
 	Language string `json:"language,omitempty"`
+	// Optional. For "custom_emoji" only, unique identifier of the custom emoji. Use getCustomEmojiStickers to get full information about the sticker
+	CustomEmojiId string `json:"custom_emoji_id,omitempty"`
 }
 
 // MessageId This object represents a unique message identifier.
@@ -4623,6 +4687,8 @@ type Sticker struct {
 	FileId string `json:"file_id"`
 	// Unique identifier for this file, which is supposed to be the same over time and for different bots. Can't be used to download or reuse the file.
 	FileUniqueId string `json:"file_unique_id"`
+	// Type of the sticker, currently one of "regular", "mask", "custom_emoji". The type of the sticker is independent from its format, which is determined by the fields is_animated and is_video.
+	Type string `json:"type"`
 	// Sticker width
 	Width int64 `json:"width"`
 	// Sticker height
@@ -4637,10 +4703,12 @@ type Sticker struct {
 	Emoji string `json:"emoji,omitempty"`
 	// Optional. Name of the sticker set to which the sticker belongs
 	SetName string `json:"set_name,omitempty"`
-	// Optional. Premium animation for the sticker, if the sticker is premium
+	// Optional. For premium regular stickers, premium animation for the sticker
 	PremiumAnimation *File `json:"premium_animation,omitempty"`
 	// Optional. For mask stickers, the position where the mask should be placed
 	MaskPosition *MaskPosition `json:"mask_position,omitempty"`
+	// Optional. For custom emoji stickers, unique identifier of the custom emoji
+	CustomEmojiId string `json:"custom_emoji_id,omitempty"`
 	// Optional. File size in bytes
 	FileSize int64 `json:"file_size,omitempty"`
 }
@@ -4652,12 +4720,12 @@ type StickerSet struct {
 	Name string `json:"name"`
 	// Sticker set title
 	Title string `json:"title"`
+	// Type of stickers in the set, currently one of "regular", "mask", "custom_emoji"
+	StickerType string `json:"sticker_type"`
 	// True, if the sticker set contains animated stickers
 	IsAnimated bool `json:"is_animated"`
 	// True, if the sticker set contains video stickers
 	IsVideo bool `json:"is_video"`
-	// True, if the sticker set contains masks
-	ContainsMasks bool `json:"contains_masks"`
 	// List of all set stickers
 	Stickers []Sticker `json:"stickers,omitempty"`
 	// Optional. Sticker set thumbnail in the .WEBP, .TGS, or .WEBM format
