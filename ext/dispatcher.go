@@ -55,9 +55,8 @@ type Dispatcher struct {
 	// handlers represents all available handles, split into groups (see handlerGroups).
 	handlers map[int][]Handler
 
-	// updatesChan is the channel that the dispatcher receives all new updates on.
-	updatesChan chan json.RawMessage
 	// limiter is how we limit the maximum number of goroutines for handling updates.
+	// if nil, this is a limitless dispatcher.
 	limiter chan struct{}
 	// waitGroup handles the number of running operations to allow for clean shutdowns.
 	waitGroup sync.WaitGroup
@@ -73,6 +72,7 @@ type DispatcherOpts struct {
 	ErrorLog *log.Logger
 
 	// MaxRoutines is used to decide how to limit the number of goroutines spawned by the dispatcher.
+	// This defines how many updates can be processed at the same time.
 	// If MaxRoutines == 0, DefaultMaxRoutines is used instead.
 	// If MaxRoutines < 0, no limits are imposed.
 	// If MaxRoutines > 0, that value is used.
@@ -80,9 +80,7 @@ type DispatcherOpts struct {
 }
 
 // NewDispatcher creates a new dispatcher, which process and handles incoming updates from the updates channel.
-func NewDispatcher(updates chan json.RawMessage, opts *DispatcherOpts) *Dispatcher {
-	var limiter chan struct{}
-
+func NewDispatcher(opts *DispatcherOpts) *Dispatcher {
 	var errFunc DispatcherErrorHandler
 	var panicFunc DispatcherPanicHandler
 
@@ -102,6 +100,8 @@ func NewDispatcher(updates chan json.RawMessage, opts *DispatcherOpts) *Dispatch
 		panicFunc = opts.Panic
 	}
 
+	var limiter chan struct{}
+	// if maxRoutines < 0, we use a limitless dispatcher. (limiter == nil)
 	if maxRoutines >= 0 {
 		if maxRoutines == 0 {
 			maxRoutines = DefaultMaxRoutines
@@ -111,24 +111,33 @@ func NewDispatcher(updates chan json.RawMessage, opts *DispatcherOpts) *Dispatch
 	}
 
 	return &Dispatcher{
-		Error:       errFunc,
-		Panic:       panicFunc,
-		ErrorLog:    errLog,
-		updatesChan: updates,
-		handlers:    make(map[int][]Handler),
-		limiter:     limiter,
-		waitGroup:   sync.WaitGroup{},
+		Error:     errFunc,
+		Panic:     panicFunc,
+		ErrorLog:  errLog,
+		handlers:  make(map[int][]Handler),
+		limiter:   limiter,
+		waitGroup: sync.WaitGroup{},
 	}
 }
 
+// CurrentUsage returns the current number of concurrently processing updates.
+func (d *Dispatcher) CurrentUsage() int {
+	return len(d.limiter)
+}
+
+// MaxUsage returns the maximum number of concurrently processing updates.
+func (d *Dispatcher) MaxUsage() int {
+	return cap(d.limiter)
+}
+
 // Start to handle incoming updates.
-func (d *Dispatcher) Start(b *gotgbot.Bot) {
+func (d *Dispatcher) Start(b *gotgbot.Bot, updates chan json.RawMessage) {
 	if d.limiter == nil {
-		d.limitlessDispatcher(b)
+		d.limitlessDispatcher(b, updates)
 		return
 	}
 
-	d.limitedDispatcher(b)
+	d.limitedDispatcher(b, updates)
 }
 
 // Stop waits for all currently processing updates to finish, and then returns.
@@ -136,8 +145,8 @@ func (d *Dispatcher) Stop() {
 	d.waitGroup.Wait()
 }
 
-func (d *Dispatcher) limitedDispatcher(b *gotgbot.Bot) {
-	for upd := range d.updatesChan {
+func (d *Dispatcher) limitedDispatcher(b *gotgbot.Bot, updates chan json.RawMessage) {
+	for upd := range updates {
 		d.waitGroup.Add(1)
 
 		// Send empty data to limiter.
@@ -152,8 +161,8 @@ func (d *Dispatcher) limitedDispatcher(b *gotgbot.Bot) {
 	}
 }
 
-func (d *Dispatcher) limitlessDispatcher(b *gotgbot.Bot) {
-	for upd := range d.updatesChan {
+func (d *Dispatcher) limitlessDispatcher(b *gotgbot.Bot, updates chan json.RawMessage) {
+	for upd := range updates {
 		d.waitGroup.Add(1)
 
 		go func(upd json.RawMessage) {
@@ -242,7 +251,7 @@ func (d *Dispatcher) ProcessRawUpdate(b *gotgbot.Bot, r json.RawMessage) {
 
 // ProcessUpdate iterates over the list of groups to execute the matching handlers.
 func (d *Dispatcher) ProcessUpdate(b *gotgbot.Bot, update *gotgbot.Update, data map[string]interface{}) {
-	var ctx *Context
+	ctx := NewContext(update, data)
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -258,12 +267,8 @@ func (d *Dispatcher) ProcessUpdate(b *gotgbot.Bot, update *gotgbot.Update, data 
 
 	for _, groupNum := range d.handlerGroups {
 		for _, handler := range d.handlers[groupNum] {
-			if !handler.CheckUpdate(b, update) {
+			if !handler.CheckUpdate(b, ctx) {
 				continue
-			}
-
-			if ctx == nil {
-				ctx = NewContext(update, data)
 			}
 
 			err := handler.HandleUpdate(b, ctx)
