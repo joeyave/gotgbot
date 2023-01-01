@@ -12,6 +12,8 @@ import (
 	"github.com/PaulSonOfLars/gotgbot/v2/ext/handlers/filters/message"
 )
 
+// This bot shows how to effectively use middlewares to modify and intercept HTTP requests to the bot API server.
+// In this example, the middleware sets the allow_sending_without_reply to certain methods, as well as make sure to log all error messages.
 func main() {
 	// Get token from the environment variable
 	token := os.Getenv("TOKEN")
@@ -37,14 +39,14 @@ func main() {
 	// Create updater and dispatcher.
 	updater := ext.NewUpdater(&ext.UpdaterOpts{
 		ErrorLog: nil,
-		DispatcherOpts: ext.DispatcherOpts{
+		Dispatcher: ext.NewDispatcher(&ext.DispatcherOpts{
 			// If an error is returned by a handler, log it and continue going.
 			Error: func(b *gotgbot.Bot, ctx *ext.Context, err error) ext.DispatcherAction {
-				fmt.Println("an error occurred while handling update:", err.Error())
+				log.Println("an error occurred while handling update:", err.Error())
 				return ext.DispatcherActionNoop
 			},
 			MaxRoutines: ext.DefaultMaxRoutines,
-		},
+		}),
 	})
 	dispatcher := updater.Dispatcher
 
@@ -64,7 +66,7 @@ func main() {
 	if err != nil {
 		panic("failed to start polling: " + err.Error())
 	}
-	fmt.Printf("%s has been started...\n", b.User.Username)
+	log.Printf("%s has been started...\n", b.User.Username)
 
 	// Idle, to keep updates coming in, and avoid bot stopping.
 	updater.Idle()

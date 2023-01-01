@@ -11,14 +11,15 @@ import (
 	"github.com/PaulSonOfLars/gotgbot/v2/ext/handlers/filters/message"
 )
 
-// This bot is slightly more complex to run, since it requires a running webserver, as well as an HTTPS domain.
+// This bot repeats everything you say - but it uses webhooks instead of long polling.
+// Webhooks are slightly more complex to run, since they require a running webserver, as well as an HTTPS domain.
 // For development purposes, we recommend running this with a tool such as ngrok (https://ngrok.com/).
 // Simply install ngrok, make an account on the website, and run:
-// ngrok http 8080
-// Then, copy paste the HTTPS URL obtained from ngrok (changes every time you run it), and run the following command
+// `ngrok http 8080`
+// Then, copy-paste the HTTPS URL obtained from ngrok (changes every time you run it), and run the following command
 // from the samples/echoWebhookBot directory:
-// TOKEN="<your_token_here>" WEBHOOK_DOMAIN="<your_domain_here>"  WEBHOOK_SECRET="<random_string_here>" go run .
-// Then, simply send /start to your bot; if it replies, you've successfully set up webhooks.
+// `TOKEN="<your_token_here>" WEBHOOK_DOMAIN="<your_domain_here>"  WEBHOOK_SECRET="<random_string_here>" go run .`
+// Then, simply send /start to your bot; if it replies, you've successfully set up webhooks!
 func main() {
 	// Get token from the environment variable.
 	token := os.Getenv("TOKEN")
@@ -52,14 +53,14 @@ func main() {
 	// Create updater and dispatcher.
 	updater := ext.NewUpdater(&ext.UpdaterOpts{
 		ErrorLog: nil,
-		DispatcherOpts: ext.DispatcherOpts{
+		Dispatcher: ext.NewDispatcher(&ext.DispatcherOpts{
 			// If an error is returned by a handler, log it and continue going.
 			Error: func(b *gotgbot.Bot, ctx *ext.Context, err error) ext.DispatcherAction {
-				fmt.Println("an error occurred while handling update:", err.Error())
+				log.Println("an error occurred while handling update:", err.Error())
 				return ext.DispatcherActionNoop
 			},
 			MaxRoutines: ext.DefaultMaxRoutines,
-		},
+		}),
 	})
 	dispatcher := updater.Dispatcher
 
@@ -71,28 +72,24 @@ func main() {
 	webhookOpts := ext.WebhookOpts{
 		Listen:      "0.0.0.0", // This example assumes you're in a dev environment running ngrok on 8080.
 		Port:        8080,
-		URLPath:     token,         // Using a secret (like the token) as the endpoint ensure that strangers aren't crafting fake updates.
-		SecretToken: webhookSecret, // Setting a webhook secret (must be here AND in SetWebhook!) ensures that the webhook is set by you.
+		SecretToken: webhookSecret, // Setting a webhook secret here allows you to ensure the webhook is set by you (must be set here AND in SetWebhook!).
 	}
-	err = updater.StartWebhook(b, webhookOpts)
+	// We use the token as the urlPath for the webhook, as using a secret ensures that strangers aren't crafting fake updates.
+	err = updater.StartWebhook(b, token, webhookOpts)
 	if err != nil {
 		panic("failed to start webhook: " + err.Error())
 	}
 
-	// Get the full webhook URL that we are expecting to receive updates at.
-	webhookURL := webhookOpts.GetWebhookURL(webhookDomain)
-
-	// Tell telegram where they should send updates for you to receive them in a secure manner.
-	_, err = b.SetWebhook(webhookURL, &gotgbot.SetWebhookOpts{
+	err = updater.SetAllBotWebhooks(webhookDomain, &gotgbot.SetWebhookOpts{
 		MaxConnections:     100,
 		DropPendingUpdates: true,
-		SecretToken:        webhookSecret, // The secret token passed at webhook start time.
+		SecretToken:        webhookOpts.SecretToken,
 	})
 	if err != nil {
 		panic("failed to set webhook: " + err.Error())
 	}
 
-	fmt.Printf("%s has been started...\n", b.User.Username)
+	log.Printf("%s has been started...\n", b.User.Username)
 
 	// Idle, to keep updates coming in, and avoid bot stopping.
 	updater.Idle()

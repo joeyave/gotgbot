@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -20,15 +20,27 @@ import (
 )
 
 var ErrMissingCertOrKeyFile = errors.New("missing certfile or keyfile")
+var ErrExpectedEmptyServer = errors.New("expected server to be nil")
+
+// botData is an internal struct that is used by the updater to keep track of the necessary update channels for each bot.
+type botData struct {
+	bot        *gotgbot.Bot
+	updateChan chan json.RawMessage
+	urlPath    string
+}
 
 type Updater struct {
+	// Dispatcher defines how to handle incoming updates.
 	Dispatcher *Dispatcher
-	UpdateChan chan json.RawMessage
-	ErrorLog   *log.Logger
+	// ErrorLog defines how to log errors which occur in the updater.
+	ErrorLog *log.Logger
 
 	stopIdling chan bool
 	running    chan bool
 	server     *http.Server
+	// map tokens to channels
+	botMapping map[string]botData
+	serveMux   *http.ServeMux
 }
 
 var (
@@ -48,40 +60,40 @@ var errorLog = log.New(os.Stderr, "ERROR", log.LstdFlags)
 
 type UpdaterOpts struct {
 	ErrorLog *log.Logger
-
-	DispatcherOpts DispatcherOpts
+	// The dispatcher instance to be used by the updater.
+	Dispatcher *Dispatcher
 }
 
 // NewUpdater Creates a new Updater, as well as the necessary structures required for the associated Dispatcher.
-func NewUpdater(opts *UpdaterOpts) Updater {
+func NewUpdater(opts *UpdaterOpts) *Updater {
 	errLog := errorLog
-	var dispatcherOpts DispatcherOpts
+	// Default dispatcher
+	dispatcher := NewDispatcher(nil)
 
 	if opts != nil {
 		if opts.ErrorLog != nil {
 			errLog = opts.ErrorLog
 		}
-
-		dispatcherOpts = opts.DispatcherOpts
+		if opts.Dispatcher != nil {
+			dispatcher = opts.Dispatcher
+		}
 	}
 
-	updateChan := make(chan json.RawMessage)
-	return Updater{
+	return &Updater{
 		ErrorLog:   errLog,
-		Dispatcher: NewDispatcher(updateChan, &dispatcherOpts),
-		UpdateChan: updateChan,
+		Dispatcher: dispatcher,
 	}
 }
 
 // PollingOpts represents the optional values to start long polling.
 type PollingOpts struct {
-	// DropPendingUpdates decides whether or not to drop "pending" updates; these are updates which were sent before
+	// DropPendingUpdates decides  whether to drop "pending" updates; these are updates which were sent before
 	// the bot was started.
 	DropPendingUpdates bool
 	// GetUpdatesOpts represents the opts passed to GetUpdates.
 	// Note: It is recommended you edit the values here when running in production environments.
 	// Changes might include:
-	//    - Changing the "GetUpdatesOpts.AllowedUpates" to only refer to relevant updates
+	//    - Changing the "GetUpdatesOpts.AllowedUpdates" to only refer to relevant updates
 	//    - Using a non-0 "GetUpdatesOpts.Timeout" value. This is how "long" telegram will hold the long-polling call
 	//    while waiting for new messages. A value of 0 causes telegram to reply immediately, which will then cause
 	//    your bot to immediately ask for more updates. While this can seem fine, it will eventually causing
@@ -93,15 +105,18 @@ type PollingOpts struct {
 	GetUpdatesOpts gotgbot.GetUpdatesOpts
 }
 
-// StartPolling starts polling updates from telegram using the getUdpates long-polling method.
-// See the PollingOpts for optional values to set in production environments.
+// StartPolling starts polling updates from telegram using getUpdates long-polling.
+// See PollingOpts for optional values to set in production environments.
 func (u *Updater) StartPolling(b *gotgbot.Bot, opts *PollingOpts) error {
-	// TODO: De-duplicate this code.
+	if u.botMapping == nil {
+		u.botMapping = make(map[string]botData)
+	}
+
 	// This logic is currently mostly duplicated over from the generated getUpdates code.
 	// This is a performance improvement to avoid:
 	// - needing to re-allocate new url.values structs.
-	// - needing to convert the opt values to strings to pass to the values.
-	// - unnecessary unmarshalling of the (possibly multiple) full Update structs.
+	// - needing to convert the 'opt' values to strings.
+	// - unnecessary unmarshalling of multiple full Update structs.
 	// Yes, this also makes me sad. :/
 	v := map[string]string{}
 	dropPendingUpdates := false
@@ -125,14 +140,19 @@ func (u *Updater) StartPolling(b *gotgbot.Bot, opts *PollingOpts) error {
 		}
 	}
 
-	go u.Dispatcher.Start(b)
-	go u.pollingLoop(b, reqOpts, dropPendingUpdates, v)
+	updateChan := make(chan json.RawMessage)
+	u.botMapping[b.GetToken()] = botData{
+		bot:        b,
+		updateChan: updateChan,
+	}
+
+	go u.Dispatcher.Start(b, updateChan)
+	go u.pollingLoop(b, reqOpts, updateChan, dropPendingUpdates, v)
 
 	return nil
 }
 
-func (u *Updater) pollingLoop(b *gotgbot.Bot, opts *gotgbot.RequestOpts, dropPendingUpdates bool, v map[string]string) {
-
+func (u *Updater) pollingLoop(b *gotgbot.Bot, opts *gotgbot.RequestOpts, updateChan chan json.RawMessage, dropPendingUpdates bool, v map[string]string) {
 	// if dropPendingUpdates, force the offset to -1
 	if dropPendingUpdates {
 		v["offset"] = "-1"
@@ -192,24 +212,18 @@ func (u *Updater) pollingLoop(b *gotgbot.Bot, opts *gotgbot.RequestOpts, dropPen
 		for _, updData := range rawUpdates {
 			totalUpdates.With(prometheus.Labels{"mode": "polling"}).Inc()
 			temp := updData // use new mem address to avoid loop conflicts
-			u.UpdateChan <- temp
+			updateChan <- temp
 		}
 	}
 }
 
 // Idle starts an infinite loop to avoid the program exciting while the background threads handle updates.
 func (u *Updater) Idle() {
+	// Create the idling channel
 	u.stopIdling = make(chan bool)
 
-	for {
-		select {
-		case <-u.stopIdling:
-			return
-		default:
-			// continue as usual
-		}
-		time.Sleep(1 * time.Second)
-	}
+	// Wait until some input is received from the idle channel, which will stop the idling.
+	<-u.stopIdling
 }
 
 // Stop stops the current updater and dispatcher instances.
@@ -228,7 +242,10 @@ func (u *Updater) Stop() error {
 		close(u.running)
 	}
 
-	close(u.UpdateChan)
+	// Close all the update channels
+	for _, data := range u.botMapping {
+		close(data.updateChan)
+	}
 
 	u.Dispatcher.Stop()
 
@@ -240,8 +257,71 @@ func (u *Updater) Stop() error {
 	return nil
 }
 
-// StartWebhook Starts the webhook server. The opts parameter allows for specifying TLS settings.
-func (u *Updater) StartWebhook(b *gotgbot.Bot, opts WebhookOpts) error {
+// StartWebhook starts the webhook server for a single bot instance.
+// This does NOT set the webhook on telegram - this should be done by the caller.
+// The opts parameter allows for specifying various webhook settings.
+func (u *Updater) StartWebhook(b *gotgbot.Bot, urlPath string, opts WebhookOpts) error {
+	if u.server != nil {
+		return ErrExpectedEmptyServer
+	}
+
+	u.AddWebhook(b, urlPath, opts)
+	return u.StartServer(opts)
+}
+
+// AddWebhook prepares the webhook server to receive webhook updates for one bot, on a specific path.
+func (u *Updater) AddWebhook(b *gotgbot.Bot, urlPath string, opts WebhookOpts) {
+	if u.serveMux == nil {
+		u.serveMux = http.NewServeMux()
+	}
+	if u.botMapping == nil {
+		u.botMapping = make(map[string]botData)
+	}
+
+	updateChan := make(chan json.RawMessage)
+	u.serveMux.HandleFunc("/"+urlPath, func(w http.ResponseWriter, r *http.Request) {
+		totalUpdates.With(prometheus.Labels{"mode": "webhook"}).Inc()
+
+		if opts.SecretToken != "" && opts.SecretToken != r.Header.Get("X-Telegram-Bot-Api-Secret-Token") {
+			// Drop any updates from invalid secret tokens.
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		bytes, _ := io.ReadAll(r.Body)
+		updateChan <- bytes
+	})
+
+	u.botMapping[b.GetToken()] = botData{
+		bot:        b,
+		updateChan: updateChan,
+		urlPath:    urlPath,
+	}
+
+	// Webhook has been added; relevant dispatcher should also be started.
+	go u.Dispatcher.Start(b, updateChan)
+}
+
+// SetAllBotWebhooks sets all the webhooks for the bots that have been added to this updater via AddWebhook.
+func (u *Updater) SetAllBotWebhooks(domain string, opts *gotgbot.SetWebhookOpts) error {
+	for _, data := range u.botMapping {
+		_, err := data.bot.SetWebhook(fmt.Sprintf("%s/%s", strings.TrimSuffix(domain, "/"), data.urlPath), opts)
+		if err != nil {
+			// Extract the botID, so we don't intentionally log the token
+			botId := strings.Split(data.bot.GetToken(), ":")[0]
+			return fmt.Errorf("failed to set webhook for %s: %w", botId, err)
+		}
+	}
+	return nil
+}
+
+// StartServer starts the webhook server for all the bots added via AddWebhook.
+// We recommend calling this BEFORE setting individual webhooks.
+// The opts parameter allows for specifying TLS settings.
+func (u *Updater) StartServer(opts WebhookOpts) error {
+	if u.serveMux == nil {
+		u.serveMux = http.NewServeMux()
+	}
+
 	var tls bool
 	if opts.CertFile == "" && opts.KeyFile == "" {
 		tls = false
@@ -251,24 +331,9 @@ func (u *Updater) StartWebhook(b *gotgbot.Bot, opts WebhookOpts) error {
 		return ErrMissingCertOrKeyFile
 	}
 
-	go u.Dispatcher.Start(b)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/"+opts.URLPath, func(w http.ResponseWriter, r *http.Request) {
-		totalUpdates.With(prometheus.Labels{"mode": "webhook"}).Inc()
-
-		if opts.SecretToken != "" && opts.SecretToken != r.Header.Get("X-Telegram-Bot-Api-Secret-Token") {
-			// Drop any updates from invalid secret tokens.
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		bytes, _ := ioutil.ReadAll(r.Body)
-		u.UpdateChan <- bytes
-	})
-
 	u.server = &http.Server{
 		Addr:              opts.GetListenAddr(),
-		Handler:           mux,
+		Handler:           u.serveMux,
 		ReadTimeout:       opts.ReadTimeout,
 		ReadHeaderTimeout: opts.ReadHeaderTimeout,
 	}
@@ -280,53 +345,10 @@ func (u *Updater) StartWebhook(b *gotgbot.Bot, opts WebhookOpts) error {
 		} else {
 			err = u.server.ListenAndServe()
 		}
-		if err != nil && errors.Is(err, http.ErrServerClosed) {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			panic("http server failed: " + err.Error())
 		}
 	}()
 
 	return nil
-}
-
-// WebhookOpts represent various fields that are needed for configuring the local webhook server.
-type WebhookOpts struct {
-	// Listen is the address to listen on (eg: localhost, 0.0.0.0, etc).
-	Listen string
-	// Port is the port listen on (eg 443, 8443, etc).
-	Port int
-	// URLPath defines the path to listen at; eg <domainname>/<URLPath>.
-	// Using the bot token here is often a good idea, as it is a secret known only by telegram.
-	URLPath string
-	// ReadTimeout is passed to the http server to limit the time it takes to read an incoming request.
-	// See http.Server for more details.
-	ReadTimeout time.Duration
-	// ReadHeaderTimeout is passed to the http server to limit the time it takes to read the headers of an incoming
-	// request.
-	// See http.Server for more details.
-	ReadHeaderTimeout time.Duration
-
-	// HTTPS cert and key files for custom signed certificates
-	CertFile string
-	KeyFile  string
-
-	// The secret token used in the Bot.SetWebhook call, which can be used to ensure that the request comes from a
-	// webhook set by you.
-	SecretToken string
-}
-
-// GetListenAddr returns the local listening address, including port.
-func (w *WebhookOpts) GetListenAddr() string {
-	if w.Listen == "" {
-		w.Listen = "0.0.0.0"
-	}
-	if w.Port == 0 {
-		w.Port = 443
-	}
-	return fmt.Sprintf("%s:%d", w.Listen, w.Port)
-}
-
-// GetWebhookURL returns the domain in the form domain/path.
-// eg: example.com/super_secret_token
-func (w *WebhookOpts) GetWebhookURL(domain string) string {
-	return fmt.Sprintf("%s/%s", strings.TrimSuffix(domain, "/"), w.URLPath)
 }
