@@ -1,7 +1,6 @@
 package ext_test
 
 import (
-	"encoding/json"
 	"sort"
 	"testing"
 
@@ -82,7 +81,7 @@ func TestDispatcher(t *testing.T) {
 		name, testParams := name, testParams
 
 		t.Run(name, func(t *testing.T) {
-			d := ext.NewDispatcher(make(chan json.RawMessage), nil)
+			d := ext.NewDispatcher(nil)
 			var events []int
 			for idx, h := range testParams.handlers {
 				idx, h := idx, h
@@ -101,9 +100,13 @@ func TestDispatcher(t *testing.T) {
 			}
 
 			t.Log("Processing one update...")
-			d.ProcessUpdate(nil, &gotgbot.Update{
+			err := d.ProcessUpdate(nil, &gotgbot.Update{
 				Message: &gotgbot.Message{Text: "test text"},
 			}, nil)
+			if err != nil {
+				t.Errorf("update processing should not have thrown an error: %s", err.Error())
+				t.FailNow()
+			}
 
 			// ensure events handled in order
 			if !sort.IntsAreSorted(events) {
@@ -117,7 +120,7 @@ func TestDispatcher(t *testing.T) {
 }
 
 func TestDispatcher_RemoveHandlerFromGroup(t *testing.T) {
-	d := ext.NewDispatcher(make(chan json.RawMessage), nil)
+	d := ext.NewDispatcher(nil)
 
 	const removeMe = "remove_me"
 	const group = 0
@@ -130,7 +133,7 @@ func TestDispatcher_RemoveHandlerFromGroup(t *testing.T) {
 }
 
 func TestDispatcher_RemoveOneHandlerFromGroup(t *testing.T) {
-	d := ext.NewDispatcher(make(chan json.RawMessage), nil)
+	d := ext.NewDispatcher(nil)
 
 	const removeMe = "remove_me"
 	const group = 0
@@ -153,7 +156,7 @@ func TestDispatcher_RemoveOneHandlerFromGroup(t *testing.T) {
 }
 
 func TestDispatcher_RemoveHandlerNonExistingHandlerFromGroup(t *testing.T) {
-	d := ext.NewDispatcher(make(chan json.RawMessage), nil)
+	d := ext.NewDispatcher(nil)
 
 	const keepMe = "keep_me"
 	const removeMe = "remove_me"
@@ -167,7 +170,7 @@ func TestDispatcher_RemoveHandlerNonExistingHandlerFromGroup(t *testing.T) {
 }
 
 func TestDispatcher_RemoveHandlerHandlerFromNonExistingGroup(t *testing.T) {
-	d := ext.NewDispatcher(make(chan json.RawMessage), nil)
+	d := ext.NewDispatcher(nil)
 
 	const removeMe = "remove_me"
 	const group = 0

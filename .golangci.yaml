@@ -29,16 +29,13 @@ output:
 linters:
   disable-all: true
   enable:
-    - deadcode
     - errcheck
     - gosimple
     - govet
     - ineffassign
     - staticcheck
-    - structcheck
     - typecheck
     - unused
-    - varcheck
     - asciicheck
     - bodyclose
     - bodyclose
@@ -92,8 +89,9 @@ issues:
     - linters:
         - gosimple
       text: "S1023:" # allow redundant return statements. They can be nice for readability.
+    - linters:
         - gosec
-      text: "G404:" # warning about insecure math/rand. We dont care about this in tests!
+      text: "G404:" # warning about insecure math/rand. We don't care about this in tests!
       path: "\\w*_test.go"
 
   # Enable default excludes, for common sense values.
