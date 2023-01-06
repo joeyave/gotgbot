@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -19,28 +18,45 @@ import (
 	"github.com/PaulSonOfLars/gotgbot/v2"
 )
 
-var ErrMissingCertOrKeyFile = errors.New("missing certfile or keyfile")
-var ErrExpectedEmptyServer = errors.New("expected server to be nil")
+var (
+	ErrMissingCertOrKeyFile = errors.New("missing certfile or keyfile")
+	ErrExpectedEmptyServer  = errors.New("expected server to be nil")
+)
 
-// botData is an internal struct that is used by the updater to keep track of the necessary update channels for each bot.
+// botData is an internal struct used by the updater to keep track of the necessary update channels for each bot.
 type botData struct {
-	bot        *gotgbot.Bot
+	// bot represents the bot for which this data is relevant.
+	bot *gotgbot.Bot
+	// updateChan represents the incoming updates channel.
 	updateChan chan json.RawMessage
-	urlPath    string
+	// polling allows us to close the polling loop.
+	polling chan bool
+	// urlPath defines the incoming webhook URL path for this bot.
+	urlPath string
 }
 
+type ErrorFunc func(error)
+
 type Updater struct {
-	// Dispatcher defines how to handle incoming updates.
+	// Dispatcher is where all the incoming updates are sent to be processed.
 	Dispatcher *Dispatcher
-	// ErrorLog defines how to log errors which occur in the updater.
+
+	// UnhandledErrFunc provides more flexibility for dealing with previously unhandled errors, such as failures to get
+	// updates (when long-polling), or failures to unmarshal.
+	// If nil, the error goes to ErrorLog.
+	UnhandledErrFunc ErrorFunc
+	// ErrorLog specifies an optional logger for unexpected behavior from handlers.
+	// If nil, logging is done via the log package's standard logger.
 	ErrorLog *log.Logger
 
+	// stopIdling is the channel that blocks the main thread from exiting, to keep the bots running.
 	stopIdling chan bool
-	running    chan bool
-	server     *http.Server
-	// map tokens to channels
-	botMapping map[string]botData
-	serveMux   *http.ServeMux
+	// serveMux is where all our webhook paths are added for the server to use.
+	serveMux *http.ServeMux
+	// webhookServer is the server in charge of receiving all incoming webhook updates.
+	webhookServer *http.Server
+	// botMapping keeps track of the data required for each bot. The key is the bot token.
+	botMapping map[string]*botData
 }
 
 var (
@@ -56,9 +72,14 @@ var (
 	)
 )
 
-var errorLog = log.New(os.Stderr, "ERROR", log.LstdFlags)
-
+// UpdaterOpts defines various fields that can be changed to configure a new Updater.
 type UpdaterOpts struct {
+	// UnhandledErrFunc provides more flexibility for dealing with previously unhandled errors, such as failures to get
+	// updates (when long-polling), or failures to unmarshal.
+	// If nil, the error goes to ErrorLog.
+	UnhandledErrFunc ErrorFunc
+	// ErrorLog specifies an optional logger for unexpected behavior from handlers.
+	// If nil, logging is done via the log package's standard logger.
 	ErrorLog *log.Logger
 	// The dispatcher instance to be used by the updater.
 	Dispatcher *Dispatcher
@@ -66,22 +87,33 @@ type UpdaterOpts struct {
 
 // NewUpdater Creates a new Updater, as well as the necessary structures required for the associated Dispatcher.
 func NewUpdater(opts *UpdaterOpts) *Updater {
-	errLog := errorLog
-	// Default dispatcher
+	var unhandledErrFunc ErrorFunc
+	var errLog *log.Logger
+
+	// Default dispatcher, no special settings.
 	dispatcher := NewDispatcher(nil)
 
 	if opts != nil {
-		if opts.ErrorLog != nil {
-			errLog = opts.ErrorLog
-		}
 		if opts.Dispatcher != nil {
 			dispatcher = opts.Dispatcher
 		}
+
+		unhandledErrFunc = opts.UnhandledErrFunc
+		errLog = opts.ErrorLog
 	}
 
 	return &Updater{
-		ErrorLog:   errLog,
-		Dispatcher: dispatcher,
+		ErrorLog:         errLog,
+		UnhandledErrFunc: unhandledErrFunc,
+		Dispatcher:       dispatcher,
+	}
+}
+
+func (u *Updater) logf(format string, args ...interface{}) {
+	if u.ErrorLog != nil {
+		u.ErrorLog.Printf(format, args...)
+	} else {
+		log.Printf(format, args...)
 	}
 }
 
@@ -109,7 +141,7 @@ type PollingOpts struct {
 // See PollingOpts for optional values to set in production environments.
 func (u *Updater) StartPolling(b *gotgbot.Bot, opts *PollingOpts) error {
 	if u.botMapping == nil {
-		u.botMapping = make(map[string]botData)
+		u.botMapping = make(map[string]*botData)
 	}
 
 	// This logic is currently mostly duplicated over from the generated getUpdates code.
@@ -141,18 +173,20 @@ func (u *Updater) StartPolling(b *gotgbot.Bot, opts *PollingOpts) error {
 	}
 
 	updateChan := make(chan json.RawMessage)
-	u.botMapping[b.GetToken()] = botData{
+	pollChan := make(chan bool)
+	u.botMapping[b.GetToken()] = &botData{
 		bot:        b,
 		updateChan: updateChan,
+		polling:    pollChan,
 	}
 
 	go u.Dispatcher.Start(b, updateChan)
-	go u.pollingLoop(b, reqOpts, updateChan, dropPendingUpdates, v)
+	go u.pollingLoop(b, reqOpts, pollChan, updateChan, dropPendingUpdates, v)
 
 	return nil
 }
 
-func (u *Updater) pollingLoop(b *gotgbot.Bot, opts *gotgbot.RequestOpts, updateChan chan json.RawMessage, dropPendingUpdates bool, v map[string]string) {
+func (u *Updater) pollingLoop(b *gotgbot.Bot, opts *gotgbot.RequestOpts, polling chan bool, updateChan chan json.RawMessage, dropPendingUpdates bool, v map[string]string) {
 	// if dropPendingUpdates, force the offset to -1
 	if dropPendingUpdates {
 		v["offset"] = "-1"
@@ -160,10 +194,9 @@ func (u *Updater) pollingLoop(b *gotgbot.Bot, opts *gotgbot.RequestOpts, updateC
 
 	var offset int64
 
-	u.running = make(chan bool)
 	for {
 		select {
-		case <-u.running:
+		case <-polling:
 			// if anything comes in, stop.
 			return
 		default:
@@ -172,8 +205,12 @@ func (u *Updater) pollingLoop(b *gotgbot.Bot, opts *gotgbot.RequestOpts, updateC
 
 		r, err := b.Request("getUpdates", v, nil, opts)
 		if err != nil {
-			u.ErrorLog.Println("failed to get updates; sleeping 1s: " + err.Error())
-			time.Sleep(time.Second)
+			if u.UnhandledErrFunc != nil {
+				u.UnhandledErrFunc(err)
+			} else {
+				u.logf("Failed to get updates; sleeping 1s: %s", err.Error())
+				time.Sleep(time.Second)
+			}
 			continue
 
 		} else if r == nil {
@@ -183,7 +220,11 @@ func (u *Updater) pollingLoop(b *gotgbot.Bot, opts *gotgbot.RequestOpts, updateC
 
 		var rawUpdates []json.RawMessage
 		if err := json.Unmarshal(r, &rawUpdates); err != nil {
-			u.ErrorLog.Println("failed to unmarshal updates: " + err.Error())
+			if u.UnhandledErrFunc != nil {
+				u.UnhandledErrFunc(err)
+			} else {
+				u.logf("Failed to unmarshal updates: %s", err.Error())
+			}
 			continue
 		}
 
@@ -197,7 +238,11 @@ func (u *Updater) pollingLoop(b *gotgbot.Bot, opts *gotgbot.RequestOpts, updateC
 		}
 
 		if err := json.Unmarshal(rawUpdates[len(rawUpdates)-1], &lastUpdate); err != nil {
-			u.ErrorLog.Println("failed to unmarshal last update: " + err.Error())
+			if u.UnhandledErrFunc != nil {
+				u.UnhandledErrFunc(err)
+			} else {
+				u.logf("Failed to unmarshal last update: %s", err.Error())
+			}
 			continue
 		}
 
@@ -228,29 +273,32 @@ func (u *Updater) Idle() {
 
 // Stop stops the current updater and dispatcher instances.
 func (u *Updater) Stop() error {
-	// if server, this is running on webhooks; shutdown the server
-	if u.server != nil {
-		err := u.server.Shutdown(context.Background())
+	// Stop any running servers.
+	if u.webhookServer != nil {
+		err := u.webhookServer.Shutdown(context.Background())
 		if err != nil {
 			return fmt.Errorf("failed to shutdown server: %w", err)
 		}
 	}
 
-	if u.running != nil {
-		// stop the polling loop
-		u.running <- false
-		close(u.running)
-	}
-
-	// Close all the update channels
+	// Close all the update channels and polling loops
 	for _, data := range u.botMapping {
+		// Close polling loops first, to ensure any updates currently being polled have the time to be sent to the
+		// updateChan.
+		if data.polling != nil {
+			data.polling <- false
+			close(data.polling)
+		}
+
+		// Then, close the updates channel.
 		close(data.updateChan)
 	}
 
+	// Stop the dispatcher from processing any further updates.
 	u.Dispatcher.Stop()
 
+	// Finally, atop idling.
 	if u.stopIdling != nil {
-		// stop idling
 		u.stopIdling <- false
 		close(u.stopIdling)
 	}
@@ -261,7 +309,7 @@ func (u *Updater) Stop() error {
 // This does NOT set the webhook on telegram - this should be done by the caller.
 // The opts parameter allows for specifying various webhook settings.
 func (u *Updater) StartWebhook(b *gotgbot.Bot, urlPath string, opts WebhookOpts) error {
-	if u.server != nil {
+	if u.webhookServer != nil {
 		return ErrExpectedEmptyServer
 	}
 
@@ -275,7 +323,7 @@ func (u *Updater) AddWebhook(b *gotgbot.Bot, urlPath string, opts WebhookOpts) {
 		u.serveMux = http.NewServeMux()
 	}
 	if u.botMapping == nil {
-		u.botMapping = make(map[string]botData)
+		u.botMapping = make(map[string]*botData)
 	}
 
 	updateChan := make(chan json.RawMessage)
@@ -291,7 +339,7 @@ func (u *Updater) AddWebhook(b *gotgbot.Bot, urlPath string, opts WebhookOpts) {
 		updateChan <- bytes
 	})
 
-	u.botMapping[b.GetToken()] = botData{
+	u.botMapping[b.GetToken()] = &botData{
 		bot:        b,
 		updateChan: updateChan,
 		urlPath:    urlPath,
@@ -331,7 +379,7 @@ func (u *Updater) StartServer(opts WebhookOpts) error {
 		return ErrMissingCertOrKeyFile
 	}
 
-	u.server = &http.Server{
+	u.webhookServer = &http.Server{
 		Addr:              opts.GetListenAddr(),
 		Handler:           u.serveMux,
 		ReadTimeout:       opts.ReadTimeout,
@@ -341,9 +389,9 @@ func (u *Updater) StartServer(opts WebhookOpts) error {
 	go func() {
 		var err error
 		if tls {
-			err = u.server.ListenAndServeTLS(opts.CertFile, opts.KeyFile)
+			err = u.webhookServer.ListenAndServeTLS(opts.CertFile, opts.KeyFile)
 		} else {
-			err = u.server.ListenAndServe()
+			err = u.webhookServer.ListenAndServe()
 		}
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			panic("http server failed: " + err.Error())
